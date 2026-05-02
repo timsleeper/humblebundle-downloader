@@ -3,4 +3,6 @@ __pycache__
 *cookies.txt
 .tox/
 .ruff_cache/
+.venv/
+.pytest_cache/
 CLAUDE.md
