@@ -1,6 +1,25 @@
 # Change log
 
 
+## 0.5.0
+
+- **Breaking**: Complete rewrite of the codebase
+- **New**: Automatic browser cookie detection via rookiepy (`--auto` / `--browser` flags)
+- **New**: Parallel async downloads with configurable concurrency (`--concurrent` flag)
+- **New**: Rich progress bars with download speed and ETA per file
+- **New**: Typer-based CLI with improved help text and validation
+- **New**: Modular architecture (auth, api, cache, downloader, filters)
+- **Fix**: Trove update check used AND instead of OR for uploaded_at/md5 comparison
+- **Fix**: Undefined variable reference in asm.js error handler
+- **Fix**: `finally: return True` swallowing exceptions in download handler
+- **Fix**: Progress bar print statements leaking outside progress_bar flag
+- Migrated from Poetry to uv for package management
+- Migrated from requests (sync) to httpx (async)
+- Migrated from argparse to typer + rich
+- Replaced `--progress` flag with always-on Rich progress display
+- Dropped Python < 3.10 support
+
+
 ## 0.4.3
 
 - Added support for asm games ([#75](https://github.com/xtream1101/humblebundle-downloader/pull/75))
