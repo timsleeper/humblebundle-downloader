@@ -128,5 +128,5 @@ async def create_client(
         cookies=cookies,
         headers=extra_headers,
         follow_redirects=True,
-        timeout=httpx.Timeout(30.0, connect=10.0),
+        timeout=httpx.Timeout(60.0, connect=30.0),
     )

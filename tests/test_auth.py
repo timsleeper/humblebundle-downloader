@@ -176,6 +176,6 @@ class TestCreateClient:
     @pytest.mark.asyncio
     async def test_client_timeout(self):
         client = await create_client(session_auth="test")
-        assert client.timeout.connect == 10.0
-        assert client.timeout.read == 30.0
+        assert client.timeout.connect == 30.0
+        assert client.timeout.read == 60.0
         await client.aclose()

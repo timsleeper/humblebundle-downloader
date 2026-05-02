@@ -23,7 +23,7 @@ from .utils import rename_old_file
 
 logger = logging.getLogger(__name__)
 
-CACHE_FLUSH_INTERVAL = 10
+DEFAULT_FLUSH_INTERVAL = 10
 
 
 class DownloadEngine:
@@ -52,6 +52,7 @@ class DownloadEngine:
         self._progress = progress
         self._completed_since_flush = 0
         self._flush_lock = asyncio.Lock()
+        self._flush_interval = max(1, max_concurrent // 2)
 
     async def download_library(self, purchase_keys: list[str] | None = None) -> None:
         """Download all normal (non-trove) bundles."""
@@ -300,6 +301,6 @@ class DownloadEngine:
         """Flush cache periodically to avoid losing progress."""
         async with self._flush_lock:
             self._completed_since_flush += 1
-            if self._completed_since_flush >= CACHE_FLUSH_INTERVAL:
+            if self._completed_since_flush >= self._flush_interval:
                 await self._cache.flush()
                 self._completed_since_flush = 0
