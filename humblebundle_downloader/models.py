@@ -31,6 +31,8 @@ class DownloadItem:
     extension: str = ""
     uploaded_at: str | None = None
     md5: str | None = None
+    # For trove items: machine_name needed to get signed download URL
+    machine_name: str | None = None
 
 
 @dataclass(frozen=True)
