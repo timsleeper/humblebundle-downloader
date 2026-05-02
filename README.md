@@ -1,114 +1,95 @@
 # Humble Bundle Downloader
 
-[![PyPI](https://img.shields.io/pypi/v/humblebundle-downloader.svg)](https://pypi.python.org/pypi/humblebundle-downloader)
-[![PyPI](https://img.shields.io/pypi/l/humblebundle-downloader.svg)](https://pypi.python.org/pypi/humblebundle-downloader)
+[![PyPI Version](https://img.shields.io/pypi/v/humblebundle-downloader?color=blue)](https://pypi.org/project/humblebundle-downloader/)
+[![PyPI License](https://img.shields.io/pypi/l/humblebundle-downloader?color=green)](https://pypi.org/project/humblebundle-downloader/)
+[![Python Version](https://img.shields.io/badge/python-3.10+-yellow)](https://www.python.org/)
+[![Code Style: Ruff](https://img.shields.io/badge/code%20style-ruff-purple)](https://docs.astral.sh/ruff/)
+[![Package Manager: uv](https://img.shields.io/badge/package%20manager-uv-orange)](https://docs.astral.sh/uv/)
 
-**Download all of your content from your Humble Bundle Library!**
+**Download your entire Humble Bundle library with a single command.**
 
-The first time this runs it may take a while because it will download everything.
-After that it will only download the content that has been updated or is missing.
+Automatically detects browser cookies, downloads in parallel with progress
+bars, and tracks what's already been downloaded so re-runs only fetch new or
+updated content.
+
+> Originally created by [Eddy Hintze](https://github.com/xtream1101/humblebundle-downloader).
+> This is a modernized fork with async downloads, automatic cookie detection, and a new CLI.
 
 ## Features
 
-- **automatic cookie detection** from your browser -- no manual export needed _(`--auto` or `--browser` flag)_
-- **parallel downloads** with configurable concurrency _(`--concurrent` flag, default 5)_
-- **rich progress bars** with download speed and ETA for each file
-- support for Humble Trove _(`--trove` flag)_
-- downloads new and updated content from your Humble Bundle Library on each run _(only check for updates if using `--update`)_
-- cli command for easy use (downloading will also work on a headless system)
-- works for SSO and 2FA accounts
-- optional filter by file types using an include _or_ exclude list _(`--include/--exclude` flag)_
-- optional filter by platform types like video, ebook, etc... _(`--platform` flag)_
-- support for asm.js browser games with offline playable local HTML
+- **Automatic cookie detection** from your browser -- no manual export needed (`--auto` or `--browser`)
+- **Parallel async downloads** with configurable concurrency (`--concurrent`, default 5, max 20)
+- **Rich progress bars** with download speed and ETA for each file
+- **Incremental downloads** -- tracks completed files in `.cache.json`, skips on re-run
+- **Humble Trove** support (`--trove`)
+- **asm.js browser games** with offline playable local HTML
+- **File type filtering** via include or exclude lists (`--include` / `--exclude`)
+- **Platform filtering** for ebook, video, audio, etc. (`--platform`)
+- Works with SSO and 2FA accounts
 
 ## Install
 
-### Using pip
-
-`pip install humblebundle-downloader`
-
-### Using uv
-
-`uv tool install humblebundle-downloader`
-
-### Using docker
-
-Remember to mount your download directory in the container using docker's `-v` argument.
-`docker run ghcr.io/xtream1101/humblebundle-downloader --help`
-
-## Instructions
-
-### 1. Authentication
-
-There are several ways to authenticate with Humble Bundle:
-
-- **Method 1: Automatic browser detection (recommended)**
-
-    If you are logged into Humble Bundle in your browser, the tool can
-    automatically extract your session cookies:
-
-    ```bash
-    # Auto-detect from any installed browser
-    hbd --auto --library-path "Downloaded Library"
-
-    # Or specify a browser
-    hbd --browser chrome --library-path "Downloaded Library"
-    ```
-
-    Supported browsers: chrome, firefox, edge, brave, opera, chromium, vivaldi
-
-- **Method 2: Session cookie value**
-
-    Get the value of the cookie called `_simpleauth_sess` from your browser's
-    developer tools and pass it directly:
-
-    ```bash
-    hbd -s 'COOKIE_VALUE' --library-path "Downloaded Library"
-    ```
-
-    Note: The quotes in the cookie value are part of the value, you might need
-    to wrap the entire value (including double quotes) in single quotes. Some
-    suggestions for common issues can be found in
-    [issue #50](https://github.com/xtream1101/humblebundle-downloader/issues/50)
-
-- **Method 3: Cookie file**
-
-    Export the cookies in the Netscape format using a browser extension:
-
-    ```bash
-    hbd --cookie-file cookies.txt --library-path "Downloaded Library"
-    ```
-
-    If your exported cookie file is not working, it may be a formatting issue.
-    This can be fixed by running:
-    `curl -b cookies.orig.txt --cookie-jar cookies.txt http://bogus`
-
-### 2. Downloading your library
-
-Basic usage with automatic authentication:
+### pip
 
 ```bash
-hbd --auto --library-path "Downloaded Library"
+pip install humblebundle-downloader
 ```
 
-With all options:
+### uv
 
 ```bash
-hbd --auto \
-    --library-path "Downloaded Library" \
-    --concurrent 10 \
-    --platform ebook \
-    --include pdf epub \
-    --update \
-    --verbose
+uv tool install humblebundle-downloader
 ```
 
-This directory structure will be used:
-`Downloaded Library/Purchase Name/Item Name/downloaded_file.ext`
+### Docker
 
-### CLI reference
+```bash
+docker run -v /path/to/downloads:/downloads \
+  ghcr.io/timsleeper/humblebundle-downloader \
+  --auto -l /downloads
+```
 
-```text
+## Usage
+
+### Authentication
+
+Pick **one** method -- they are mutually exclusive.
+
+| Method | Flag | Description |
+|--------|------|-------------|
+| Auto-detect | `--auto` | Tries all installed browsers |
+| Specific browser | `--browser chrome` | chrome, firefox, edge, brave, opera, chromium, vivaldi |
+| Session cookie | `-s 'VALUE'` | Raw `_simpleauth_sess` cookie value from devtools |
+| Cookie file | `-c cookies.txt` | Netscape format cookie file |
+
+### Examples
+
+```bash
+# Download everything, auto-detect browser cookies
+hbd --auto -l ~/HumbleLibrary
+
+# Download only PDFs from a specific browser
+hbd --browser firefox -l ~/HumbleLibrary --include pdf
+
+# Download ebooks only, 10 parallel downloads, with debug logging
+hbd --auto -l ~/HumbleLibrary -p ebook -n 10 --verbose
+
+# Download Humble Trove content only
+hbd --auto -l ~/HumbleLibrary --trove
+
+# Re-check for updated versions of already-downloaded files
+hbd --auto -l ~/HumbleLibrary --update
+
+# Download specific bundles by purchase key
+hbd --auto -l ~/HumbleLibrary -k PURCHASE_KEY_1 -k PURCHASE_KEY_2
+
+# Using a session cookie (quotes are part of the value)
+hbd -s '"eyJ...long_value..."' -l ~/HumbleLibrary
+```
+
+### CLI Reference
+
+```
 Options:
   -l, --library-path PATH    Folder to download all content to (required)
   -a, --auto                 Automatically detect cookies from any browser
@@ -128,23 +109,21 @@ Options:
 
 ## Notes
 
-- Inside your library folder a file named `.cache.json` is saved and keeps
-  track of the files that have been downloaded. This way running the download
-  command again pointing to the same directory will only download new or
-  updated files.
-- Use `--help` to see all available options.
-- Find supported platforms for the `--platform` flag by visiting your Humble
-  Bundle Library and look under the **Platform** dropdown.
-- Download select bundles by using the `-k` or `--keys` flag. Find these keys
-  by going to your _Purchases_ section, click on a product and there should be
-  a `downloads?key=XXXX` in the url.
+- A `.cache.json` file is saved inside your library folder, tracking what has
+  been downloaded. Re-running the same command skips already-downloaded files.
+  The cache flushes periodically so progress is preserved even if the process
+  is interrupted.
 - The `--include` and `--exclude` flags are mutually exclusive.
-- The `--auto`, `--browser`, `--cookie-file`, and `--session-auth` flags are
-  mutually exclusive -- use exactly one.
+- Find supported platforms for `--platform` by visiting your Humble Bundle
+  Library and looking under the **Platform** dropdown.
+- Find purchase keys for `-k` by going to your _Purchases_ section, clicking
+  on a product, and copying the `downloads?key=XXXX` value from the URL.
+- If your session cookie expires mid-download, grab a fresh one and re-run --
+  the cache ensures it picks up where it left off.
 
 ## Architecture
 
-```text
+```
 humblebundle_downloader/
     cli.py           Typer CLI with Rich console output
     auth.py          Cookie extraction (rookiepy, cookie file, session auth)
@@ -162,10 +141,13 @@ humblebundle_downloader/
 Requires Python 3.10+ and [uv](https://docs.astral.sh/uv/).
 
 ```bash
-uv sync                      # install all dependencies
-uv run pytest                 # run tests
-uv run pytest tests/test_filters.py::test_include_with_values  # single test
-uv run ruff check .           # lint
-uv run ruff format --check .  # format check
-uv run hbd --help             # run CLI locally
+uv sync --all-extras          # install all dependencies
+uv run pytest                  # run tests (169 tests)
+uv run ruff check .            # lint
+uv run ruff format --check .   # format check
+uv run hbd --help              # run CLI locally
 ```
+
+## License
+
+MIT -- see [LICENSE](LICENSE).

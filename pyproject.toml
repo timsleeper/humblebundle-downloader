@@ -27,8 +27,8 @@ test = [
 hbd = "humblebundle_downloader.cli:app"
 
 [project.urls]
-Homepage = "https://github.com/xtream1101/humblebundle-downloader"
-Repository = "https://github.com/xtream1101/humblebundle-downloader"
+Homepage = "https://github.com/timsleeper/humblebundle-downloader"
+Repository = "https://github.com/timsleeper/humblebundle-downloader"
 
 [build-system]
 requires = ["hatchling"]
