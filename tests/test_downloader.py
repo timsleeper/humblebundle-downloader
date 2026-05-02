@@ -330,9 +330,12 @@ class TestProgressTaskCleanup:
             assert progress.tasks == []
 
     @respx.mock
-    async def test_removes_task_on_incomplete_download(self, api, cache, library_path):
+    async def test_removes_task_on_incomplete_download(self, api, cache, library_path, monkeypatch):
         from rich.console import Console
         from rich.progress import Progress
+        from humble_dl import downloader as downloader_mod
+
+        monkeypatch.setattr(downloader_mod, "RETRY_BACKOFF_BASE", 0)
 
         download_path = library_path / "short.bin"
         respx.get("https://dl.example.com/short.bin").mock(
@@ -348,9 +351,10 @@ class TestProgressTaskCleanup:
                 api=api, cache=cache, library_path=library_path, progress=progress
             )
             item = make_item(url="https://dl.example.com/short.bin", local_path=download_path)
-            with pytest.raises(Exception):
-                await engine._do_download(item, None)
+            status = await engine._do_download(item, None)
+            assert status == DownloadStatus.FAILED
             assert progress.tasks == []
+            assert not download_path.exists()
 
 
 class TestDownloadTroveItem:
@@ -606,3 +610,124 @@ class TestProcessOrder:
         await engine._process_order("key1")
         expected_path = library_path / "Test Bundle" / "Game 1" / "game1.zip"
         assert expected_path.exists()
+
+
+class TestDownloadRetry:
+    """Mid-stream connection drops are common on big files; the engine retries
+    transient httpx errors and incomplete content-length responses."""
+
+    @respx.mock
+    async def test_retries_then_succeeds_on_read_error(self, engine, library_path, monkeypatch):
+        from humble_dl import downloader as downloader_mod
+
+        monkeypatch.setattr(downloader_mod, "RETRY_BACKOFF_BASE", 0)
+
+        download_path = library_path / "flaky.bin"
+        good_response = httpx.Response(200, content=b"final payload")
+        respx.get("https://dl.example.com/flaky.bin").mock(
+            side_effect=[httpx.ReadError("connection dropped"), good_response]
+        )
+
+        item = make_item(url="https://dl.example.com/flaky.bin", local_path=download_path)
+        status = await engine._do_download(item, None)
+        assert status == DownloadStatus.COMPLETED
+        assert download_path.read_bytes() == b"final payload"
+
+    @respx.mock
+    async def test_retries_exhausted_returns_failed(self, engine, library_path, monkeypatch):
+        from humble_dl import downloader as downloader_mod
+
+        monkeypatch.setattr(downloader_mod, "RETRY_BACKOFF_BASE", 0)
+
+        download_path = library_path / "broken.bin"
+        respx.get("https://dl.example.com/broken.bin").mock(
+            side_effect=httpx.ReadError("permanently broken")
+        )
+
+        item = make_item(url="https://dl.example.com/broken.bin", local_path=download_path)
+        status = await engine._do_download(item, None)
+        assert status == DownloadStatus.FAILED
+        assert not download_path.exists()
+
+    @respx.mock
+    async def test_incomplete_content_length_is_retried(self, engine, library_path, monkeypatch):
+        from humble_dl import downloader as downloader_mod
+
+        monkeypatch.setattr(downloader_mod, "RETRY_BACKOFF_BASE", 0)
+
+        download_path = library_path / "short.bin"
+        short_response = httpx.Response(200, content=b"partial", headers={"Content-Length": "9999"})
+        full_payload = b"full payload bytes"
+        full_response = httpx.Response(
+            200, content=full_payload, headers={"Content-Length": str(len(full_payload))}
+        )
+        respx.get("https://dl.example.com/short.bin").mock(
+            side_effect=[short_response, full_response]
+        )
+
+        item = make_item(url="https://dl.example.com/short.bin", local_path=download_path)
+        status = await engine._do_download(item, None)
+        assert status == DownloadStatus.COMPLETED
+        assert download_path.read_bytes() == full_payload
+
+    @respx.mock
+    async def test_md5_mismatch_does_not_retry(self, engine, library_path, monkeypatch):
+        """MD5 mismatch is a hard failure — retry won't change the bytes."""
+        from humble_dl import downloader as downloader_mod
+
+        monkeypatch.setattr(downloader_mod, "RETRY_BACKOFF_BASE", 0)
+
+        download_path = library_path / "bad.bin"
+        route = respx.get("https://dl.example.com/bad.bin").mock(
+            return_value=httpx.Response(200, content=b"corrupt")
+        )
+
+        item = make_item(
+            url="https://dl.example.com/bad.bin",
+            local_path=download_path,
+            md5="0" * 32,
+        )
+        with pytest.raises(Exception):
+            await engine._do_download(item, None)
+        assert route.call_count == 1
+        assert not download_path.exists()
+
+    @respx.mock
+    async def test_404_does_not_retry(self, engine, library_path, monkeypatch):
+        """A 404 means the file isn't there — retrying won't conjure it."""
+        from humble_dl import downloader as downloader_mod
+
+        monkeypatch.setattr(downloader_mod, "RETRY_BACKOFF_BASE", 0)
+
+        download_path = library_path / "missing.bin"
+        route = respx.get("https://dl.example.com/missing.bin").mock(
+            return_value=httpx.Response(404)
+        )
+
+        item = make_item(url="https://dl.example.com/missing.bin", local_path=download_path)
+        status = await engine._do_download(item, None)
+        assert status == DownloadStatus.FAILED
+        assert route.call_count == 1
+
+    @respx.mock
+    async def test_backoff_doubles_between_attempts(self, engine, library_path, monkeypatch):
+        from humble_dl import downloader as downloader_mod
+
+        sleep_calls: list[float] = []
+
+        async def fake_sleep(seconds: float) -> None:
+            sleep_calls.append(seconds)
+
+        monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+        monkeypatch.setattr(downloader_mod.asyncio, "sleep", fake_sleep)
+        monkeypatch.setattr(downloader_mod, "RETRY_BACKOFF_BASE", 2.0)
+
+        respx.get("https://dl.example.com/flaky.bin").mock(side_effect=httpx.ReadError("dropped"))
+
+        item = make_item(
+            url="https://dl.example.com/flaky.bin",
+            local_path=library_path / "flaky.bin",
+        )
+        await engine._do_download(item, None)
+        # 3 attempts → 2 sleeps with doubling backoff
+        assert sleep_calls == [2.0, 4.0]

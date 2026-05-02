@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 import aiofiles
+import httpx
 from rich.progress import (
     Progress,
     TaskID,
@@ -21,6 +22,17 @@ from .utils import rename_old_file
 logger = logging.getLogger(__name__)
 
 DEFAULT_FLUSH_INTERVAL = 10
+RETRY_ATTEMPTS = 3
+RETRY_BACKOFF_BASE = 2.0
+RETRYABLE_EXCEPTIONS = (
+    httpx.ReadError,
+    httpx.ReadTimeout,
+    httpx.WriteError,
+    httpx.RemoteProtocolError,
+    httpx.ConnectError,
+    httpx.ConnectTimeout,
+    httpx.PoolTimeout,
+)
 
 
 class DownloadEngine:
@@ -112,68 +124,92 @@ class DownloadEngine:
         """Perform the actual streamed download with progress tracking."""
         item.local_path.parent.mkdir(parents=True, exist_ok=True)
 
-        task_id: TaskID | None = None
-        try:
-            async with self._api.download_stream(item.url) as response:
-                if response.status_code != 200:
-                    logger.debug(f"File unavailable: {item.url} ({response.status_code})")
-                    return DownloadStatus.FAILED
+        downloaded = 0
+        md5_hash = hashlib.md5()
+        _last_modified: str | None = None
 
-                last_modified = response.headers.get("Last-Modified")
-                if cached and last_modified and last_modified == cached.get("url_last_modified"):
-                    return DownloadStatus.SKIPPED
+        for attempt in range(1, RETRY_ATTEMPTS + 1):
+            task_id: TaskID | None = None
+            downloaded = 0
+            md5_hash = hashlib.md5()
+            try:
+                async with self._api.download_stream(item.url) as response:
+                    if response.status_code != 200:
+                        logger.debug(f"File unavailable: {item.url} ({response.status_code})")
+                        return DownloadStatus.FAILED
 
-                # Rename old file if updating
-                if cached and "url_last_modified" in cached:
-                    try:
-                        old_date = datetime.datetime.strptime(
-                            cached["url_last_modified"], "%a, %d %b %Y %H:%M:%S %Z"
-                        ).strftime("%Y-%m-%d")
-                        rename_old_file(item.local_path, old_date)
-                    except ValueError:
-                        pass
+                    last_modified = response.headers.get("Last-Modified")
+                    if (
+                        cached
+                        and last_modified
+                        and last_modified == cached.get("url_last_modified")
+                    ):
+                        return DownloadStatus.SKIPPED
 
-                total = int(response.headers.get("content-length", 0)) or None
-                if self._progress and total:
-                    task_id = self._progress.add_task(item.local_path.name, total=total)
+                    if cached and "url_last_modified" in cached:
+                        try:
+                            old_date = datetime.datetime.strptime(
+                                cached["url_last_modified"], "%a, %d %b %Y %H:%M:%S %Z"
+                            ).strftime("%Y-%m-%d")
+                            rename_old_file(item.local_path, old_date)
+                        except ValueError:
+                            pass
 
-                downloaded = 0
-                md5_hash = hashlib.md5()
-                async with aiofiles.open(item.local_path, "wb") as f:
-                    async for chunk in response.aiter_bytes(chunk_size=8192):
-                        await f.write(chunk)
-                        downloaded += len(chunk)
-                        md5_hash.update(chunk)
-                        if task_id is not None:
-                            self._progress.update(task_id, completed=downloaded)
+                    total = int(response.headers.get("content-length", 0)) or None
+                    if self._progress and total:
+                        task_id = self._progress.add_task(item.local_path.name, total=total)
 
-                if total and downloaded < total:
-                    raise DownloadError(f"Incomplete download: {downloaded}/{total} bytes")
+                    async with aiofiles.open(item.local_path, "wb") as f:
+                        async for chunk in response.aiter_bytes(chunk_size=8192):
+                            await f.write(chunk)
+                            downloaded += len(chunk)
+                            md5_hash.update(chunk)
+                            if task_id is not None:
+                                self._progress.update(task_id, completed=downloaded)
 
-                if item.md5 and md5_hash.hexdigest() != item.md5:
-                    raise DownloadError(
-                        f"MD5 mismatch for {item.local_path.name}: "
-                        f"expected {item.md5}, got {md5_hash.hexdigest()}"
+                    if total and downloaded < total:
+                        # Connection silently dropped before EOF; route to retry.
+                        raise httpx.ReadError(f"Incomplete download: {downloaded}/{total} bytes")
+
+                    if item.md5 and md5_hash.hexdigest() != item.md5:
+                        raise DownloadError(
+                            f"MD5 mismatch for {item.local_path.name}: "
+                            f"expected {item.md5}, got {md5_hash.hexdigest()}"
+                        )
+
+                    _last_modified = last_modified
+                break
+            except DownloadError:
+                if item.local_path.exists():
+                    item.local_path.unlink()
+                raise
+            except RETRYABLE_EXCEPTIONS as e:
+                if item.local_path.exists():
+                    item.local_path.unlink()
+                if attempt < RETRY_ATTEMPTS:
+                    wait = RETRY_BACKOFF_BASE * (2 ** (attempt - 1))
+                    logger.warning(
+                        f"{item.local_path.name}: {type(e).__name__} on attempt "
+                        f"{attempt}/{RETRY_ATTEMPTS}, retrying in {wait:.0f}s"
                     )
-
-                # Capture header before leaving context
-                _last_modified = last_modified
-
-        except DownloadError:
-            if item.local_path.exists():
-                item.local_path.unlink()
-            raise
-        except Exception:
-            logger.exception(f"Failed to download {item.local_path.name}")
-            if item.local_path.exists():
-                item.local_path.unlink()
-            return DownloadStatus.FAILED
-        finally:
-            if task_id is not None and self._progress is not None:
-                try:
-                    self._progress.remove_task(task_id)
-                except KeyError:
-                    pass
+                    await asyncio.sleep(wait)
+                    continue
+                logger.error(
+                    f"Failed to download {item.local_path.name} after "
+                    f"{RETRY_ATTEMPTS} attempts: {type(e).__name__}: {e}"
+                )
+                return DownloadStatus.FAILED
+            except Exception:
+                logger.exception(f"Failed to download {item.local_path.name}")
+                if item.local_path.exists():
+                    item.local_path.unlink()
+                return DownloadStatus.FAILED
+            finally:
+                if task_id is not None and self._progress is not None:
+                    try:
+                        self._progress.remove_task(task_id)
+                    except KeyError:
+                        pass
 
         # Update cache
         file_info: dict[str, Any] = {
